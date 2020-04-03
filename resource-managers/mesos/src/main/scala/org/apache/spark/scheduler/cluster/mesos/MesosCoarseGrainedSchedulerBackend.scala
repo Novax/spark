@@ -363,6 +363,8 @@ private[spark] class MesosCoarseGrainedSchedulerBackend(
         return
       }
 
+      logOffers(offers)
+
       if (numExecutors >= executorLimit) {
         logDebug("Executor limit reached. numExecutors: " + numExecutors +
           " executorLimit: " + executorLimit)
@@ -396,6 +398,35 @@ private[spark] class MesosCoarseGrainedSchedulerBackend(
         offer,
         Some("unmet constraints"),
         Some(rejectOfferDurationForUnmetConstraints))
+    }
+  }
+
+  private def logOffers(offers: JList[Offer]): Unit = {
+    if (log.isDebugEnabled()) {
+      val s =
+        offers
+          .asScala
+          .map { offer =>
+            val offerAttributes = toAttributeMap(offer.getAttributesList)
+            val offerMem = getResource(offer.getResourcesList, "mem")
+            val offerCpus = getResource(offer.getResourcesList, "cpus")
+            val offerPorts = getRangeResource(offer.getResourcesList, "ports")
+            val offerReservationInfo = offer
+              .getResourcesList
+              .asScala
+              .find { r => r.getReservation != null }
+
+            val id = offer.getId.getValue
+
+            s"\tOffer: $id Host:${offer.getHostname}" +
+              s"mem: $offerMem cpu: $offerCpus ports: $offerPorts " +
+              s"with attributes: $offerAttributes " +
+                  offerReservationInfo.map(resInfo =>
+                    s"reservation info: ${resInfo.getReservation.toString}").getOrElse("")
+          }
+          .mkString("\n")
+
+      logDebug(s"Received ${offers.size} offers from Mesos:\n$s")
     }
   }
 
@@ -491,6 +522,9 @@ private[spark] class MesosCoarseGrainedSchedulerBackend(
 
     var launchTasks = true
 
+    val spreadOut = conf.getBoolean("spark.deploy.spreadOut", true)
+    logDebug(s"spark.deploy.spreadOut setting is set to $spreadOut")
+
     // TODO(mgummelt): combine offers for a single slave
     //
     // round-robin create executors on the available offers
@@ -540,7 +574,12 @@ private[spark] class MesosCoarseGrainedSchedulerBackend(
             s"with id: $slaveId. Requirements were not met for this offer.")
         }
       }
+
+      if (spreadOut) {
+        launchTasks = false
+      }
     }
+
     tasks.toMap
   }
 
