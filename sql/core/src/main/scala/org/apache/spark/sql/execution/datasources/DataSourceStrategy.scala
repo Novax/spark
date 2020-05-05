@@ -527,15 +527,6 @@ object DataSourceStrategy {
       case expressions.Not(child) =>
         translateFilter(child).map(sources.Not)
 
-      case expressions.StartsWith(a: Attribute, Literal(v: UTF8String, StringType)) =>
-        Some(sources.StringStartsWith(a.name, v.toString))
-
-      case expressions.EndsWith(a: Attribute, Literal(v: UTF8String, StringType)) =>
-        Some(sources.StringEndsWith(a.name, v.toString))
-
-      case expressions.Contains(a: Attribute, Literal(v: UTF8String, StringType)) =>
-        Some(sources.StringContains(a.name, v.toString))
-
       case _ => None
     }
   }
