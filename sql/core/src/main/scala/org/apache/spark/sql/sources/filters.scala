@@ -218,3 +218,8 @@ case class StringEndsWith(attribute: String, value: String) extends Filter {
 case class StringContains(attribute: String, value: String) extends Filter {
   override def references: Array[String] = Array(attribute)
 }
+
+@InterfaceStability.Stable
+case class ArrayContains(attribute: String, value: Any) extends Filter {
+  override def references: Array[String] = Array(attribute) ++ findReferences(value)
+}

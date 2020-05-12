@@ -503,6 +503,9 @@ object DataSourceStrategy {
       case expressions.Contains(e: Expression, Literal(v: UTF8String, StringType)) =>
         attrName(e).map(name => sources.StringContains(name, v.toString))
 
+      case expressions.ArrayContains(e: Expression, Literal(v, t)) =>
+        attrName(e).map(name => sources.ArrayContains(name, convertToScala(v, t)))
+
       case expressions.And(left, right) =>
         // See SPARK-12218 for detailed discussion
         // It is not safe to just convert one side if we do not understand the

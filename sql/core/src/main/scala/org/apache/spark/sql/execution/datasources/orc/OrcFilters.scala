@@ -139,6 +139,7 @@ private[sql] object OrcFilters {
   }
 
 
+
   /**
    * Build a SearchArgument and return the builder so far.
    */
@@ -150,25 +151,38 @@ private[sql] object OrcFilters {
       getPredicateLeafType(getDataType(attribute))
 
     def getDataType(attribute: String): DataType = {
-      @scala.annotation.tailrec
-      def types(s: StructType, attribute: String) : DataType = {
-        val typeMap = s.fields.map(f => f.name -> f.dataType).toMap
-        typeMap.get(attribute) match {
-          case Some(t) => t
-          case _ =>
-            val levels = attribute.split("\\.", 2)
-            if (levels.length <= 1) {
-              NullType
-            } else {
-              typeMap.get(levels.head) match {
-                case Some(st: StructType) => types(st, levels.last)
-                case _ => NullType
-              }
-            }
+      def types(s: DataType, path: List[String]): Option[DataType] = {
+        s match {
+          case (t: ArrayType) => types(t.elementType, path)
+          case (st: StructType) =>
+            for {
+              name <- path.headOption
+              field <- st.fields.find(x => x.name == name)
+              r <- types(field.dataType, path.tail)
+            } yield r;
+          case _ => Some(s)
         }
       }
 
-      types(schema, attribute)
+      types(schema, attribute.split('.').toList).getOrElse(NullType)
+    }
+
+    def translateAttr(schema: StructType, attribute: String) = {
+
+      def types(s: DataType, path: List[String], acc: List[String]): Option[String] = {
+        s match {
+          case (t: ArrayType) => types(t.elementType, path, acc :+ "_elem")
+          case (st: StructType) =>
+            for {
+              name <- path.headOption
+              field <- st.fields.find(x => x.name == name)
+              r <- types(field.dataType, path.tail, acc :+ name)
+            } yield r;
+          case _ => Some(acc.mkString("."))
+        }
+      }
+
+      types(schema, attribute.split('.').toList, Nil)
     }
 
     import org.apache.spark.sql.sources._
@@ -241,6 +255,12 @@ private[sql] object OrcFilters {
         val castedValues = values.map(v => castLiteralValue(v, getDataType(attribute)))
         Some(builder.startAnd().in(attribute, getType(attribute),
           castedValues.map(_.asInstanceOf[AnyRef]): _*).end())
+
+      case ArrayContains(attribute, value)  if isSearchableType(getDataType(attribute)) =>
+        val castedValue = castLiteralValue(value, getDataType(attribute))
+        translateAttr(schema, attribute).map{ pred =>
+          builder.startAnd().equals(pred, getType(attribute), castedValue).end()
+        }
 
       case _ => None
     }
