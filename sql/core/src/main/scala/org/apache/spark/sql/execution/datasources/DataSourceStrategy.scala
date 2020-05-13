@@ -432,8 +432,7 @@ case class DataSourceStrategy(conf: SQLConf) extends Strategy with Logging with 
 
 object DataSourceStrategy {
 
-  def attrName(e: Expression) = {
-
+  def attrName(e: Expression): Option[String] = {
     def helper(e: Expression): Option[Seq[String]] = e match {
       case (a: Attribute) =>
         Some(Seq(a.name))
@@ -444,7 +443,6 @@ object DataSourceStrategy {
       case (s: GetStructField) =>
         helper(s.child).map(_ :+ s.childSchema(s.ordinal).name)
       case _ => None
-
     }
 
     helper(e).map(_.mkString("."))
