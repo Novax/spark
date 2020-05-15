@@ -17,13 +17,13 @@
 
 package org.apache.spark.sql.execution.datasources.orc;
 
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
 
 import org.apache.orc.storage.ql.exec.vector.*;
 
-import org.apache.spark.sql.types.DataType;
-import org.apache.spark.sql.types.Decimal;
-import org.apache.spark.sql.types.TimestampType;
+import org.apache.spark.sql.catalyst.expressions.Or;
+import org.apache.spark.sql.types.*;
 import org.apache.spark.sql.vectorized.ColumnarArray;
 import org.apache.spark.sql.vectorized.ColumnarMap;
 import org.apache.spark.unsafe.types.UTF8String;
@@ -40,6 +40,9 @@ public class OrcColumnVector extends org.apache.spark.sql.vectorized.ColumnVecto
   private BytesColumnVector bytesData;
   private DecimalColumnVector decimalData;
   private TimestampColumnVector timestampData;
+  private org.apache.spark.sql.vectorized.ColumnVector[] structVectors;
+  private ListColumnVector listData;
+  private org.apache.spark.sql.vectorized.ColumnVector listVector;
   private final boolean isTimestamp;
 
   private int batchSize;
@@ -64,6 +67,16 @@ public class OrcColumnVector extends org.apache.spark.sql.vectorized.ColumnVecto
       decimalData = (DecimalColumnVector) vector;
     } else if (vector instanceof TimestampColumnVector) {
       timestampData = (TimestampColumnVector) vector;
+    } else if (vector instanceof StructColumnVector && type instanceof StructType){
+      StructColumnVector structData = (StructColumnVector) vector;
+      StructType structType = (StructType) type;
+      structVectors = new org.apache.spark.sql.vectorized.ColumnVector[structData.fields.length];
+      for (int i = 0; i < structData.fields.length; i++) {
+        structVectors[i] = new OrcColumnVector(structType.fields()[i].dataType(), structData.fields[i]);
+      }
+    } else if (vector instanceof ListColumnVector && type instanceof ArrayType){
+      listData = (ListColumnVector) vector;
+      listVector = new OrcColumnVector(((ArrayType)type).elementType(), listData.child);
     } else {
       throw new UnsupportedOperationException();
     }
@@ -178,7 +191,8 @@ public class OrcColumnVector extends org.apache.spark.sql.vectorized.ColumnVecto
 
   @Override
   public ColumnarArray getArray(int rowId) {
-    throw new UnsupportedOperationException();
+    if (isNullAt(rowId)) return null;
+    return new ColumnarArray(listVector, (int)listData.offsets[rowId], (int)listData.lengths[rowId]);
   }
 
   @Override
@@ -188,6 +202,6 @@ public class OrcColumnVector extends org.apache.spark.sql.vectorized.ColumnVecto
 
   @Override
   public org.apache.spark.sql.vectorized.ColumnVector getChild(int ordinal) {
-    throw new UnsupportedOperationException();
+    return structVectors[ordinal];
   }
 }
