@@ -43,6 +43,9 @@ public class OrcColumnVector extends org.apache.spark.sql.vectorized.ColumnVecto
   private org.apache.spark.sql.vectorized.ColumnVector[] structVectors;
   private ListColumnVector listData;
   private org.apache.spark.sql.vectorized.ColumnVector listVector;
+  private MapColumnVector mapData;
+  private org.apache.spark.sql.vectorized.ColumnVector keysVector;
+  private org.apache.spark.sql.vectorized.ColumnVector valuesVector;
   private final boolean isTimestamp;
 
   private int batchSize;
@@ -77,6 +80,12 @@ public class OrcColumnVector extends org.apache.spark.sql.vectorized.ColumnVecto
     } else if (vector instanceof ListColumnVector && type instanceof ArrayType){
       listData = (ListColumnVector) vector;
       listVector = new OrcColumnVector(((ArrayType)type).elementType(), listData.child);
+    } else if (vector instanceof MapColumnVector && type instanceof MapType){
+      mapData = (MapColumnVector) vector;
+      MapType mapType = (MapType) type;
+      keysVector = new OrcColumnVector(mapType.keyType(), mapData.keys);
+      valuesVector = new OrcColumnVector(mapType.valueType(), mapData.values);
+
     } else {
       throw new UnsupportedOperationException();
     }
@@ -197,7 +206,8 @@ public class OrcColumnVector extends org.apache.spark.sql.vectorized.ColumnVecto
 
   @Override
   public ColumnarMap getMap(int rowId) {
-    throw new UnsupportedOperationException();
+    if (isNullAt(rowId)) return null;
+    return new ColumnarMap(keysVector, valuesVector, (int)mapData.offsets[rowId], (int)mapData.lengths[rowId]);
   }
 
   @Override
