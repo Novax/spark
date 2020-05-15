@@ -201,13 +201,15 @@ public class OrcColumnVector extends org.apache.spark.sql.vectorized.ColumnVecto
   @Override
   public ColumnarArray getArray(int rowId) {
     if (isNullAt(rowId)) return null;
-    return new ColumnarArray(listVector, (int)listData.offsets[rowId], (int)listData.lengths[rowId]);
+    int index = getRowIndex(rowId);
+    return new ColumnarArray(listVector, (int)listData.offsets[index], (int)listData.lengths[index]);
   }
 
   @Override
   public ColumnarMap getMap(int rowId) {
     if (isNullAt(rowId)) return null;
-    return new ColumnarMap(keysVector, valuesVector, (int)mapData.offsets[rowId], (int)mapData.lengths[rowId]);
+    int index = getRowIndex(rowId);
+    return new ColumnarMap(keysVector, valuesVector, (int)mapData.offsets[index], (int)mapData.lengths[index]);
   }
 
   @Override
