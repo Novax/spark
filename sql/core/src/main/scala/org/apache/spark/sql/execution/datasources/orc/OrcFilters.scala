@@ -82,20 +82,19 @@ private[sql] object OrcFilters {
    * Create ORC filter as a SearchArgument instance.
    */
   def createFilter(schema: StructType, filters: Seq[Filter]): Option[SearchArgument] = {
-    val dataTypeMap = schema.map(f => f.name -> f.dataType).toMap
 
     // First, tries to convert each filter individually to see whether it's convertible, and then
     // collect all convertible ones to build the final `SearchArgument`.
     val convertibleFilters = for {
       filter <- filters
-      _ <- buildSearchArgument(dataTypeMap, filter, newBuilder)
+      _ <- buildSearchArgument(schema, filter, newBuilder)
     } yield filter
 
     for {
       // Combines all convertible filters using `And` to produce a single conjunction
       conjunction <- buildTree(convertibleFilters)
       // Then tries to build a single ORC `SearchArgument` for the conjunction predicate
-      builder <- buildSearchArgument(dataTypeMap, conjunction, newBuilder)
+      builder <- buildSearchArgument(schema, conjunction, newBuilder)
     } yield builder.build()
   }
 
@@ -139,15 +138,52 @@ private[sql] object OrcFilters {
     case _ => value
   }
 
+
+
   /**
    * Build a SearchArgument and return the builder so far.
    */
   private def buildSearchArgument(
-      dataTypeMap: Map[String, DataType],
+      schema: StructType,
       expression: Filter,
       builder: Builder): Option[Builder] = {
     def getType(attribute: String): PredicateLeaf.Type =
-      getPredicateLeafType(dataTypeMap(attribute))
+      getPredicateLeafType(getDataType(attribute))
+
+    def getDataType(attribute: String): DataType = {
+      def types(s: DataType, path: List[String]): Option[DataType] = {
+        s match {
+          case (t: ArrayType) => types(t.elementType, path)
+          case (st: StructType) =>
+            for {
+              name <- path.headOption
+              field <- st.fields.find(x => x.name == name)
+              r <- types(field.dataType, path.tail)
+            } yield r;
+          case _ => Some(s)
+        }
+      }
+
+      types(schema, attribute.split('.').toList).getOrElse(NullType)
+    }
+
+    def translateAttr(schema: StructType, attribute: String) = {
+
+      def types(s: DataType, path: List[String], acc: List[String]): Option[String] = {
+        s match {
+          case (t: ArrayType) => types(t.elementType, path, acc :+ "_elem")
+          case (st: StructType) =>
+            for {
+              name <- path.headOption
+              field <- st.fields.find(x => x.name == name)
+              r <- types(field.dataType, path.tail, acc :+ name)
+            } yield r;
+          case _ => Some(acc.mkString("."))
+        }
+      }
+
+      types(schema, attribute.split('.').toList, Nil)
+    }
 
     import org.apache.spark.sql.sources._
 
@@ -161,73 +197,70 @@ private[sql] object OrcFilters {
         // Pushing one side of AND down is only safe to do at the top level.
         // You can see ParquetRelation's initializeLocalJobFunc method as an example.
         for {
-          _ <- buildSearchArgument(dataTypeMap, left, newBuilder)
-          _ <- buildSearchArgument(dataTypeMap, right, newBuilder)
-          lhs <- buildSearchArgument(dataTypeMap, left, builder.startAnd())
-          rhs <- buildSearchArgument(dataTypeMap, right, lhs)
+          _ <- buildSearchArgument(schema, left, newBuilder)
+          _ <- buildSearchArgument(schema, right, newBuilder)
+          lhs <- buildSearchArgument(schema, left, builder.startAnd())
+          rhs <- buildSearchArgument(schema, right, lhs)
         } yield rhs.end()
 
       case Or(left, right) =>
         for {
-          _ <- buildSearchArgument(dataTypeMap, left, newBuilder)
-          _ <- buildSearchArgument(dataTypeMap, right, newBuilder)
-          lhs <- buildSearchArgument(dataTypeMap, left, builder.startOr())
-          rhs <- buildSearchArgument(dataTypeMap, right, lhs)
+          _ <- buildSearchArgument(schema, left, newBuilder)
+          _ <- buildSearchArgument(schema, right, newBuilder)
+          lhs <- buildSearchArgument(schema, left, builder.startOr())
+          rhs <- buildSearchArgument(schema, right, lhs)
         } yield rhs.end()
 
       case Not(child) =>
         for {
-          _ <- buildSearchArgument(dataTypeMap, child, newBuilder)
-          negate <- buildSearchArgument(dataTypeMap, child, builder.startNot())
+          _ <- buildSearchArgument(schema, child, newBuilder)
+          negate <- buildSearchArgument(schema, child, builder.startNot())
         } yield negate.end()
 
       // NOTE: For all case branches dealing with leaf predicates below, the additional `startAnd()`
       // call is mandatory.  ORC `SearchArgument` builder requires that all leaf predicates must be
       // wrapped by a "parent" predicate (`And`, `Or`, or `Not`).
 
-      case EqualTo(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
-        val quotedName = quoteAttributeNameIfNeeded(attribute)
-        val castedValue = castLiteralValue(value, dataTypeMap(attribute))
-        Some(builder.startAnd().equals(quotedName, getType(attribute), castedValue).end())
+      case EqualTo(attribute, value) if isSearchableType(getDataType(attribute)) =>
+        val castedValue = castLiteralValue(value, getDataType(attribute))
+        Some(builder.startAnd().equals(attribute, getType(attribute), castedValue).end())
 
-      case EqualNullSafe(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
-        val quotedName = quoteAttributeNameIfNeeded(attribute)
-        val castedValue = castLiteralValue(value, dataTypeMap(attribute))
-        Some(builder.startAnd().nullSafeEquals(quotedName, getType(attribute), castedValue).end())
+      case EqualNullSafe(attribute, value) if isSearchableType(getDataType(attribute)) =>
+        val castedValue = castLiteralValue(value, getDataType(attribute))
+        Some(builder.startAnd().nullSafeEquals(attribute, getType(attribute), castedValue).end())
 
-      case LessThan(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
-        val quotedName = quoteAttributeNameIfNeeded(attribute)
-        val castedValue = castLiteralValue(value, dataTypeMap(attribute))
-        Some(builder.startAnd().lessThan(quotedName, getType(attribute), castedValue).end())
+      case LessThan(attribute, value) if isSearchableType(getDataType(attribute)) =>
+        val castedValue = castLiteralValue(value, getDataType(attribute))
+        Some(builder.startAnd().lessThan(attribute, getType(attribute), castedValue).end())
 
-      case LessThanOrEqual(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
-        val quotedName = quoteAttributeNameIfNeeded(attribute)
-        val castedValue = castLiteralValue(value, dataTypeMap(attribute))
-        Some(builder.startAnd().lessThanEquals(quotedName, getType(attribute), castedValue).end())
+      case LessThanOrEqual(attribute, value) if isSearchableType(getDataType(attribute)) =>
+        val castedValue = castLiteralValue(value, getDataType(attribute))
+        Some(builder.startAnd().lessThanEquals(attribute, getType(attribute), castedValue).end())
 
-      case GreaterThan(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
-        val quotedName = quoteAttributeNameIfNeeded(attribute)
-        val castedValue = castLiteralValue(value, dataTypeMap(attribute))
-        Some(builder.startNot().lessThanEquals(quotedName, getType(attribute), castedValue).end())
+      case GreaterThan(attribute, value) if isSearchableType(getDataType(attribute)) =>
+        val castedValue = castLiteralValue(value, getDataType(attribute))
+        Some(builder.startNot().lessThanEquals(attribute, getType(attribute), castedValue).end())
 
-      case GreaterThanOrEqual(attribute, value) if isSearchableType(dataTypeMap(attribute)) =>
-        val quotedName = quoteAttributeNameIfNeeded(attribute)
-        val castedValue = castLiteralValue(value, dataTypeMap(attribute))
-        Some(builder.startNot().lessThan(quotedName, getType(attribute), castedValue).end())
+      case GreaterThanOrEqual(attribute, value) if isSearchableType(getDataType(attribute)) =>
+        val castedValue = castLiteralValue(value, getDataType(attribute))
+        Some(builder.startNot().lessThan(attribute, getType(attribute), castedValue).end())
 
-      case IsNull(attribute) if isSearchableType(dataTypeMap(attribute)) =>
-        val quotedName = quoteAttributeNameIfNeeded(attribute)
-        Some(builder.startAnd().isNull(quotedName, getType(attribute)).end())
+      case IsNull(attribute) if isSearchableType(getDataType(attribute)) =>
+        Some(builder.startAnd().isNull(attribute, getType(attribute)).end())
 
-      case IsNotNull(attribute) if isSearchableType(dataTypeMap(attribute)) =>
-        val quotedName = quoteAttributeNameIfNeeded(attribute)
-        Some(builder.startNot().isNull(quotedName, getType(attribute)).end())
+      case IsNotNull(attribute) if isSearchableType(getDataType(attribute)) =>
+        Some(builder.startNot().isNull(attribute, getType(attribute)).end())
 
-      case In(attribute, values) if isSearchableType(dataTypeMap(attribute)) =>
-        val quotedName = quoteAttributeNameIfNeeded(attribute)
-        val castedValues = values.map(v => castLiteralValue(v, dataTypeMap(attribute)))
-        Some(builder.startAnd().in(quotedName, getType(attribute),
+      case In(attribute, values) if isSearchableType(getDataType(attribute)) =>
+        val castedValues = values.map(v => castLiteralValue(v, getDataType(attribute)))
+        Some(builder.startAnd().in(attribute, getType(attribute),
           castedValues.map(_.asInstanceOf[AnyRef]): _*).end())
+
+      case ArrayContains(attribute, value)  if isSearchableType(getDataType(attribute)) =>
+        val castedValue = castLiteralValue(value, getDataType(attribute))
+        translateAttr(schema, attribute).map{ pred =>
+          builder.startAnd().equals(pred, getType(attribute), castedValue).end()
+        }
 
       case _ => None
     }

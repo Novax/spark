@@ -431,6 +431,23 @@ case class DataSourceStrategy(conf: SQLConf) extends Strategy with Logging with 
 }
 
 object DataSourceStrategy {
+
+  def attrName(e: Expression): Option[String] = {
+    def helper(e: Expression): Option[Seq[String]] = e match {
+      case (a: Attribute) =>
+        Some(Seq(a.name))
+      case (a: Alias) =>
+        helper(a.child)
+      case (s: GetArrayStructFields) =>
+        helper(s.child).map(_ :+ s.field.name)
+      case (s: GetStructField) =>
+        helper(s.child).map(_ :+ s.childSchema(s.ordinal).name)
+      case _ => None
+    }
+
+    helper(e).map(_.mkString("."))
+  }
+
   /**
    * Tries to translate a Catalyst [[Expression]] into data source [[Filter]].
    *
@@ -438,52 +455,63 @@ object DataSourceStrategy {
    */
   protected[sql] def translateFilter(predicate: Expression): Option[Filter] = {
     predicate match {
-      case expressions.EqualTo(a: Attribute, Literal(v, t)) =>
-        Some(sources.EqualTo(a.name, convertToScala(v, t)))
-      case expressions.EqualTo(Literal(v, t), a: Attribute) =>
-        Some(sources.EqualTo(a.name, convertToScala(v, t)))
+      case expressions.EqualTo(e: Expression, Literal(v, t)) =>
+        attrName(e).map(name => sources.EqualTo(name, convertToScala(v, t)))
+      case expressions.EqualTo(Literal(v, t), e: Expression) =>
+        attrName(e).map(name => sources.EqualTo(name, convertToScala(v, t)))
 
-      case expressions.EqualNullSafe(a: Attribute, Literal(v, t)) =>
-        Some(sources.EqualNullSafe(a.name, convertToScala(v, t)))
-      case expressions.EqualNullSafe(Literal(v, t), a: Attribute) =>
-        Some(sources.EqualNullSafe(a.name, convertToScala(v, t)))
+      case expressions.EqualNullSafe(e: Expression, Literal(v, t)) =>
+        attrName(e).map(name => sources.EqualNullSafe(name, convertToScala(v, t)))
+      case expressions.EqualNullSafe(Literal(v, t), e: Expression) =>
+        attrName(e).map(name => sources.EqualNullSafe(name, convertToScala(v, t)))
 
-      case expressions.GreaterThan(a: Attribute, Literal(v, t)) =>
-        Some(sources.GreaterThan(a.name, convertToScala(v, t)))
-      case expressions.GreaterThan(Literal(v, t), a: Attribute) =>
-        Some(sources.LessThan(a.name, convertToScala(v, t)))
+      case expressions.GreaterThan(e: Expression, Literal(v, t)) =>
+        attrName(e).map(name => sources.GreaterThan(name, convertToScala(v, t)))
+      case expressions.GreaterThan(Literal(v, t), e: Expression) =>
+        attrName(e).map(name => sources.LessThan(name, convertToScala(v, t)))
 
-      case expressions.LessThan(a: Attribute, Literal(v, t)) =>
-        Some(sources.LessThan(a.name, convertToScala(v, t)))
-      case expressions.LessThan(Literal(v, t), a: Attribute) =>
-        Some(sources.GreaterThan(a.name, convertToScala(v, t)))
+      case expressions.LessThan(e: Expression, Literal(v, t)) =>
+        attrName(e).map(name => sources.LessThan(name, convertToScala(v, t)))
+      case expressions.LessThan(Literal(v, t), e: Expression) =>
+        attrName(e).map(name => sources.GreaterThan(name, convertToScala(v, t)))
 
-      case expressions.GreaterThanOrEqual(a: Attribute, Literal(v, t)) =>
-        Some(sources.GreaterThanOrEqual(a.name, convertToScala(v, t)))
-      case expressions.GreaterThanOrEqual(Literal(v, t), a: Attribute) =>
-        Some(sources.LessThanOrEqual(a.name, convertToScala(v, t)))
+      case expressions.GreaterThanOrEqual(e: Expression, Literal(v, t)) =>
+        attrName(e).map(name => sources.GreaterThanOrEqual(name, convertToScala(v, t)))
+      case expressions.GreaterThanOrEqual(Literal(v, t), e: Expression) =>
+        attrName(e).map(name => sources.LessThanOrEqual(name, convertToScala(v, t)))
 
-      case expressions.LessThanOrEqual(a: Attribute, Literal(v, t)) =>
-        Some(sources.LessThanOrEqual(a.name, convertToScala(v, t)))
-      case expressions.LessThanOrEqual(Literal(v, t), a: Attribute) =>
-        Some(sources.GreaterThanOrEqual(a.name, convertToScala(v, t)))
+      case expressions.LessThanOrEqual(e: Expression, Literal(v, t)) =>
+        attrName(e).map(name => sources.LessThanOrEqual(name, convertToScala(v, t)))
+      case expressions.LessThanOrEqual(Literal(v, t), e: Expression) =>
+        attrName(e).map(name => sources.GreaterThanOrEqual(name, convertToScala(v, t)))
 
-      case expressions.InSet(a: Attribute, set) =>
-        val toScala = CatalystTypeConverters.createToScalaConverter(a.dataType)
-        Some(sources.In(a.name, set.toArray.map(toScala)))
+      case expressions.InSet(e: Expression, set) =>
+        val toScala = CatalystTypeConverters.createToScalaConverter(e.dataType)
+        attrName(e).map(name => sources.In(name, set.toArray.map(toScala)))
 
       // Because we only convert In to InSet in Optimizer when there are more than certain
       // items. So it is possible we still get an In expression here that needs to be pushed
       // down.
-      case expressions.In(a: Attribute, list) if !list.exists(!_.isInstanceOf[Literal]) =>
-        val hSet = list.map(e => e.eval(EmptyRow))
-        val toScala = CatalystTypeConverters.createToScalaConverter(a.dataType)
-        Some(sources.In(a.name, hSet.toArray.map(toScala)))
+      case expressions.In(e: Expression, list) if list.forall(_.isInstanceOf[Literal]) =>
+        val hSet = list.map(_.eval(EmptyRow))
+        val toScala = CatalystTypeConverters.createToScalaConverter(e.dataType)
+        attrName(e).map(name => sources.In(name, hSet.toArray.map(toScala)))
 
-      case expressions.IsNull(a: Attribute) =>
-        Some(sources.IsNull(a.name))
-      case expressions.IsNotNull(a: Attribute) =>
-        Some(sources.IsNotNull(a.name))
+      case expressions.IsNull(e: Expression) =>
+        attrName(e).map(name => sources.IsNull(name))
+      case expressions.IsNotNull(e: Expression) =>
+        attrName(e).map(name => sources.IsNotNull(name))
+      case expressions.StartsWith(e: Expression, Literal(v: UTF8String, StringType)) =>
+        attrName(e).map(name => sources.StringStartsWith(name, v.toString))
+
+      case expressions.EndsWith(e: Expression, Literal(v: UTF8String, StringType)) =>
+        attrName(e).map(name => sources.StringEndsWith(name, v.toString))
+
+      case expressions.Contains(e: Expression, Literal(v: UTF8String, StringType)) =>
+        attrName(e).map(name => sources.StringContains(name, v.toString))
+
+      case expressions.ArrayContains(e: Expression, Literal(v, t)) =>
+        attrName(e).map(name => sources.ArrayContains(name, convertToScala(v, t)))
 
       case expressions.And(left, right) =>
         // See SPARK-12218 for detailed discussion
@@ -508,15 +536,6 @@ object DataSourceStrategy {
 
       case expressions.Not(child) =>
         translateFilter(child).map(sources.Not)
-
-      case expressions.StartsWith(a: Attribute, Literal(v: UTF8String, StringType)) =>
-        Some(sources.StringStartsWith(a.name, v.toString))
-
-      case expressions.EndsWith(a: Attribute, Literal(v: UTF8String, StringType)) =>
-        Some(sources.StringEndsWith(a.name, v.toString))
-
-      case expressions.Contains(a: Attribute, Literal(v: UTF8String, StringType)) =>
-        Some(sources.StringContains(a.name, v.toString))
 
       case _ => None
     }
