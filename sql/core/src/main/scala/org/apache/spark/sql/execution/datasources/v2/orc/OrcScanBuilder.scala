@@ -61,9 +61,7 @@ case class OrcScanBuilder(
         OrcInputFormat.setSearchArgument(hadoopConf, f, schema.fieldNames)
       }
       val dataTypeMap = schema.map(f => quoteIfNeeded(f.name) -> f.dataType).toMap
-      // TODO (SPARK-25557): ORC doesn't support nested predicate pushdown, so they are removed.
-      val newFilters = filters.filter(!_.containsNestedColumn)
-      _pushedFilters = OrcFilters.convertibleFilters(schema, dataTypeMap, newFilters).toArray
+      _pushedFilters = OrcFilters.convertibleFilters(schema, dataTypeMap, filters).toArray
     }
     filters
   }

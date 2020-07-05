@@ -506,6 +506,9 @@ object DataSourceStrategy {
     case expressions.Contains(pushableColumn(name), Literal(v: UTF8String, StringType)) =>
       Some(sources.StringContains(name, v.toString))
 
+    case expressions.ArrayContains(pushableColumn(name), Literal(v, t)) =>
+      Some(sources.ArrayContains(name, convertToScala(v, t)))
+
     case expressions.Literal(true, BooleanType) =>
       Some(sources.AlwaysTrue)
 
@@ -673,6 +676,10 @@ abstract class PushableColumnBase {
         } else {
           None
         }
+      case a: Alias =>
+        helper(a.child)
+      case s: GetArrayStructFields if nestedPredicatePushdownEnabled =>
+        helper(s.child).map(_ :+ s.field.name)
       case s: GetStructField if nestedPredicatePushdownEnabled =>
         helper(s.child).map(_ :+ s.childSchema(s.ordinal).name)
       case _ => None

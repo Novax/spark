@@ -185,6 +185,7 @@ object CSVFilters {
         Some(Literal(true, BooleanType))
       case sources.AlwaysFalse() =>
         Some(Literal(false, BooleanType))
+      case _ => None
     }
     translate(filter)
   }

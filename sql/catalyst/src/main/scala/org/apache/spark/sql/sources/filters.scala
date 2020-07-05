@@ -278,6 +278,10 @@ case class StringContains(attribute: String, value: String) extends Filter {
   override def references: Array[String] = Array(attribute)
 }
 
+@Stable
+case class ArrayContains(attribute: String, value: Any) extends Filter {
+  override def references: Array[String] = Array(attribute) ++ findReferences(value)
+}
 /**
  * A filter that always evaluates to `true`.
  *
